@@ -223,6 +223,7 @@ class Trainer(object):
             loss_before_regularization = []
             logits = []
             for i in range(self.path_length):
+
                 feed_dict[i][self.candidate_relation_sequence[i]] = state['next_relations']
                 feed_dict[i][self.candidate_entity_sequence[i]] = state['next_entities']
                 feed_dict[i][self.entity_sequence[i]] = state['current_entities']
@@ -232,6 +233,15 @@ class Trainer(object):
                 logits.append(per_example_logits)
                 # action = np.squeeze(action, axis=1)  # [B,]
                 state = episode(idx)
+
+                if self.batch_counter % 10 == 0:
+                    data_dict = {
+                       "next_relations" : np.asarray(state['next_relations']),
+                       "next_entities"  : np.asarray(state['next_entities']),
+                       "curr_entities"  : np.asarray(state['current_entities']) }
+
+                    np.savez("output/umls/mini-batch-{}".format(self.batch_counter), **data_dict)
+
             loss_before_regularization = np.stack(loss_before_regularization, axis=1)
 
             # get the final reward from the environment
@@ -269,9 +279,8 @@ class Trainer(object):
                 os.mkdir(self.path_logger_file + "/" + str(self.batch_counter))
                 self.path_logger_file_ = self.path_logger_file + "/" + str(self.batch_counter) + "/paths"
 
-
-
                 self.test(sess, beam=True, print_paths=False)
+
 
             logger.info('Memory usage: %s (kb)' % resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
@@ -327,6 +336,15 @@ class Trainer(object):
                 feed_dict[self.current_entities] = state['current_entities']
                 feed_dict[self.prev_state] = agent_mem
                 feed_dict[self.prev_relation] = previous_relation
+
+                if batch_counter % 10 == 0:
+                    data_dict = {
+                       "next_relations" : np.asarray(state['next_relations']),
+                       "next_entities"  : np.asarray(state['next_entities']),
+                       "curr_entities"  : np.asarray(state['current_entities']), 
+                       "prev_relations" : np.asarray(previous_relation)}
+
+                    np.savez("output/umls/mini-batch-{}".format(batch_counter), **data_dict)
 
                 loss, agent_mem, test_scores, test_action_idx, chosen_relation = sess.run(
                     [ self.test_loss, self.test_state, self.test_logits, self.test_action_idx, self.chosen_relation],
@@ -583,7 +601,7 @@ if __name__ == '__main__':
         trainer.test(sess, beam=True, print_paths=True, save_model=False)
 
 
-        print options['nell_evaluation']
+        print(options['nell_evaluation'])
         if options['nell_evaluation'] == 1:
             nell_eval(path_logger_file + "/" + "test_beam/" + "pathsanswers", trainer.data_input_dir+'/sort_test.pairs' )
 
