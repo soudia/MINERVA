@@ -4,6 +4,7 @@ from tqdm import tqdm
 import json
 import time
 import os
+import random
 import logging
 import numpy as np
 import tensorflow as tf
@@ -15,12 +16,19 @@ from collections import defaultdict
 import gc
 import resource
 import sys
+from cell_state import DQNACellState
 from code.model.baseline import ReactiveBaseline
 from code.model.nell_eval import nell_eval
 from scipy.misc import logsumexp as lse
 
 logger = logging.getLogger()
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+
+from tensorflow.python.util import deprecation
+deprecation._PRINT_DEPRECATION_WARNINGS = False
+
+tf.logging.set_verbosity(tf.logging.ERROR)
+
 
 
 class Trainer(object):
@@ -101,13 +109,13 @@ class Trainer(object):
             self.candidate_relation_sequence.append(next_possible_relations)
             self.candidate_entity_sequence.append(next_possible_entities)
             self.entity_sequence.append(start_entities)
+
         self.loss_before_reg = tf.constant(0.0)
         self.per_example_loss, self.per_example_logits, self.action_idx = self.agent(
             self.candidate_relation_sequence,
             self.candidate_entity_sequence, self.entity_sequence,
             self.input_path,
             self.query_relation, self.range_arr, self.first_state_of_test, self.path_length)
-
 
         self.loss_op = self.calc_reinforce_loss()
 
@@ -118,20 +126,24 @@ class Trainer(object):
         self.prev_state = tf.placeholder(tf.float32, self.agent.get_mem_shape(), name="memory_of_agent")
         self.prev_relation = tf.placeholder(tf.int32, [None, ], name="previous_relation")
         self.query_embedding = tf.nn.embedding_lookup(self.agent.relation_lookup_table, self.query_relation)  # [B, 2D]
+
         layer_state = tf.unstack(self.prev_state, self.LSTM_layers)
         formated_state = [tf.unstack(s, 2) for s in layer_state]
+        a = tf.zeros((self.agent.batch_size, self.agent.action_outDim))
+        b = tf.zeros((self.agent.batch_size, self.agent.belief_outDim))
+        formated_state = tuple([DQNACellState(c, h, a, b) for h, c in formated_state])
+         
         self.next_relations = tf.placeholder(tf.int32, shape=[None, self.max_num_actions])
         self.next_entities = tf.placeholder(tf.int32, shape=[None, self.max_num_actions])
 
         self.current_entities = tf.placeholder(tf.int32, shape=[None,])
 
-
-
         with tf.variable_scope("policy_steps_unroll") as scope:
             scope.reuse_variables()
-            self.test_loss, test_state, self.test_logits, self.test_action_idx, self.chosen_relation = self.agent.step(
+            belief = self.agent.init_belief()
+            self.test_loss, _, test_state, self.test_logits, self.test_action_idx, self.chosen_relation = self.agent.step(
                 self.next_relations, self.next_entities, formated_state, self.prev_relation, self.query_embedding,
-                self.current_entities, self.input_path[0], self.range_arr, self.first_state_of_test)
+                self.current_entities, belief, self.input_path[0], self.range_arr, self.first_state_of_test)
             self.test_state = tf.stack(test_state)
 
         logger.info('TF Graph creation done..')
@@ -234,14 +246,6 @@ class Trainer(object):
                 # action = np.squeeze(action, axis=1)  # [B,]
                 state = episode(idx)
 
-                if self.batch_counter % 10 == 0:
-                    data_dict = {
-                       "next_relations" : np.asarray(state['next_relations']),
-                       "next_entities"  : np.asarray(state['next_entities']),
-                       "curr_entities"  : np.asarray(state['current_entities']) }
-
-                    np.savez("output/umls/mini-batch-{}".format(self.batch_counter), **data_dict)
-
             loss_before_regularization = np.stack(loss_before_regularization, axis=1)
 
             # get the final reward from the environment
@@ -333,18 +337,11 @@ class Trainer(object):
                     feed_dict[self.first_state_of_test] = True
                 feed_dict[self.next_relations] = state['next_relations']
                 feed_dict[self.next_entities] = state['next_entities']
-                feed_dict[self.current_entities] = state['current_entities']
+                feed_dict[self.current_entities] = state['current_entities'][:80] #FIXME
                 feed_dict[self.prev_state] = agent_mem
                 feed_dict[self.prev_relation] = previous_relation
 
-                if batch_counter % 10 == 0:
-                    data_dict = {
-                       "next_relations" : np.asarray(state['next_relations']),
-                       "next_entities"  : np.asarray(state['next_entities']),
-                       "curr_entities"  : np.asarray(state['current_entities']), 
-                       "prev_relations" : np.asarray(previous_relation)}
-
-                    np.savez("output/umls/mini-batch-{}".format(batch_counter), **data_dict)
+                print("inside test: ", (state['current_entities'].shape, state['current_entities']))
 
                 loss, agent_mem, test_scores, test_action_idx, chosen_relation = sess.run(
                     [ self.test_loss, self.test_state, self.test_logits, self.test_action_idx, self.chosen_relation],
@@ -536,6 +533,11 @@ if __name__ == '__main__':
 
     # read command line options
     options = read_options()
+
+    random.seed(options['seed'])
+    np.random.seed(options['seed'])
+    tf.set_random_seed(options['seed'])
+
     # Set logging
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter('%(asctime)s: [ %(message)s ]',
@@ -562,7 +564,6 @@ if __name__ == '__main__':
     config.gpu_options.allow_growth = False
     config.log_device_placement = False
 
-
     #Training
     if not options['load_model']:
         trainer = Trainer(options)
@@ -586,20 +587,19 @@ if __name__ == '__main__':
         save_path = options['model_load_dir']
         path_logger_file = trainer.path_logger_file
         output_dir = trainer.output_dir
+
     with tf.Session(config=config) as sess:
         trainer.initialize(restore=save_path, sess=sess)
-
-        trainer.test_rollouts = 100
+        trainer.test_rollouts = 20
 
         os.mkdir(path_logger_file + "/" + "test_beam")
         trainer.path_logger_file_ = path_logger_file + "/" + "test_beam" + "/paths"
         with open(output_dir + '/scores.txt', 'a') as score_file:
             score_file.write("Test (beam) scores with best model from " + save_path + "\n")
         trainer.test_environment = trainer.test_test_environment
-        trainer.test_environment.test_rollouts = 100
+        trainer.test_environment.test_rollouts = 80
 
         trainer.test(sess, beam=True, print_paths=True, save_model=False)
-
 
         print(options['nell_evaluation'])
         if options['nell_evaluation'] == 1:

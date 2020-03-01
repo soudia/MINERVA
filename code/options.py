@@ -28,11 +28,14 @@ def read_options():
     parser.add_argument("--log_file_name", default="reward.txt", type=str)
     parser.add_argument("--output_file", default="", type=str)
     parser.add_argument("--num_rollouts", default=20, type=int)
-    parser.add_argument("--test_rollouts", default=100, type=int)
+    parser.add_argument("--test_rollouts", default=20, type=int)
     parser.add_argument("--LSTM_layers", default=1, type=int)
     parser.add_argument("--model_dir", default='', type=str)
     parser.add_argument("--base_output_dir", default='', type=str)
     parser.add_argument("--total_iterations", default=2000, type=int)
+    parser.add_argument("--algorithm", default="", type=str)
+    parser.add_argument("--intrinsic_reward", default=0, type=int)
+    parser.add_argument("--seed", default=1234, type=int)
 
     parser.add_argument("--Lambda", default=0.0, type=float)
     parser.add_argument("--pool", default="max", type=str)
@@ -64,7 +67,9 @@ def read_options():
 
     parsed['load_model'] = (parsed['load_model'] == 1)
 
-    ##Logger##
+    parsed['intrinsic_reward'] = (parsed['intrinsic_reward'] == 1)
+
+    # Logger##
     parsed['path_logger_file'] = parsed['output_dir']
     parsed['log_file_name'] = parsed['output_dir'] +'/log.txt'
     os.makedirs(parsed['output_dir'])

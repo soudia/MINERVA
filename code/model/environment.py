@@ -69,6 +69,52 @@ class Episode(object):
         return self.state
 
 
+class RewardShaper(object):
+    def __init__(self, params, scope='reward_shaping'):
+        self.m = params['m']
+        self.path_length = params['path_length']
+        self.batch_size  = params['batch_size']
+        self.LSTM_Layers = params['LSTM_Layers']
+        self.hidden_size = params['hidden_size']
+        self._intrinsic_reward = params['intrinsic_reward']
+
+        self.inference_path = []
+        self.positive_reward = params['positive_reward']
+        self.negative_reward = params['negative_reward']
+
+        if self._intrinsic_reward:
+            with tf.variable_scope(scope):
+                for _ in range(self.LSTM_Layers):
+                    cells.append(tf.nn.rnn_cell.BasicLSTMCell(self.m * self.hidden_size))
+            self.reward_shaper = tf.nn.rnn_cell.MultiRNNCell(cells, state_is_tuple=True)
+            self.state = self.reward_shaper.zero_state(self.batch_size, dtype=tf.float32)
+
+
+    def intrinsic_reward(self, inference_path):
+        self.reward_shaper(inference_path, None)
+
+
+    def extrinsic_reward(self, current_entities, end_entities):
+        reward = (current_entities == end_entities)
+
+        # set the True and False values to the values of positive and negative rewards.
+        condlist = [reward == True, reward == False]
+        choicelist = [self.positive_reward, self.negative_reward]
+        reward = np.select(condlist, choicelist)  # [B,]
+        return reward
+
+
+    def get_reward(self, current_entities, end_entities, last_step=False):
+        if last_step:
+            reward = self.extrinsic_reward(current_entities, end_entities)
+            self.inference_path.clear()
+        else:
+            self.inference_path.append(current_entities)
+            reward = self.intrinsic_reward(self.inference_path)
+        return reward
+
+
+
 class env(object):
     def __init__(self, params, mode='train'):
 
@@ -80,6 +126,8 @@ class env(object):
         self.path_len = params['path_length']
         self.test_rollouts = params['test_rollouts']
         input_dir = params['data_input_dir']
+        self.intrinsic_reward = params['intrinsic_reward'] and params['LSTM_layers'] > 0
+
         if mode == 'train':
             self.batcher = RelationEntityBatcher(input_dir=input_dir,
                                                  batch_size=params['batch_size'],
@@ -94,10 +142,14 @@ class env(object):
                                                  relation_vocab=params['relation_vocab'])
 
             self.total_no_examples = self.batcher.store.shape[0]
+
         self.grapher = RelationEntityGrapher(triple_store=params['data_input_dir'] + '/' + 'graph.txt',
                                              max_num_actions=params['max_num_actions'],
                                              entity_vocab=params['entity_vocab'],
                                              relation_vocab=params['relation_vocab'])
+
+        #self.reward_shaper = RewardShaper(params)
+
 
     def get_episodes(self):
         params = self.batch_size, self.path_len, self.num_rollouts, self.test_rollouts, self.positive_reward, self.negative_reward, self.mode, self.batcher
