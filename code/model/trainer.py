@@ -1,5 +1,9 @@
 from __future__ import absolute_import
 from __future__ import division
+
+import logging
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
+
 from tqdm import tqdm
 import json
 import time
@@ -27,8 +31,6 @@ logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 from tensorflow.python.util import deprecation
 deprecation._PRINT_DEPRECATION_WARNINGS = False
 
-tf.logging.set_verbosity(tf.logging.ERROR)
-
 
 
 class Trainer(object):
@@ -39,6 +41,10 @@ class Trainer(object):
 
         self.agent = Agent(params)
         self.save_path = None
+
+        params['entity_lookup_table'] = self.agent.entity_lookup_table
+        params['relation_lookup_table'] = self.agent.relation_lookup_table
+
         self.train_environment = env(params, 'train')
         self.dev_test_environment = env(params, 'dev')
         self.test_test_environment = env(params, 'test')
@@ -129,8 +135,8 @@ class Trainer(object):
 
         layer_state = tf.unstack(self.prev_state, self.LSTM_layers)
         formated_state = [tf.unstack(s, 2) for s in layer_state]
-        a = tf.zeros((self.agent.batch_size, self.agent.action_outDim))
-        b = tf.zeros((self.agent.batch_size, self.agent.belief_outDim))
+        a = tf.zeros((self.agent.batch_size, self.agent.action_out_dim))
+        b = tf.zeros((self.agent.batch_size, self.agent.belief_out_dim))
         formated_state = tuple([DQNACellState(c, h, a, b) for h, c in formated_state])
          
         self.next_relations = tf.placeholder(tf.int32, shape=[None, self.max_num_actions])
@@ -337,11 +343,9 @@ class Trainer(object):
                     feed_dict[self.first_state_of_test] = True
                 feed_dict[self.next_relations] = state['next_relations']
                 feed_dict[self.next_entities] = state['next_entities']
-                feed_dict[self.current_entities] = state['current_entities'][:80] #FIXME
+                feed_dict[self.current_entities] = state['current_entities']
                 feed_dict[self.prev_state] = agent_mem
                 feed_dict[self.prev_relation] = previous_relation
-
-                print("inside test: ", (state['current_entities'].shape, state['current_entities']))
 
                 loss, agent_mem, test_scores, test_action_idx, chosen_relation = sess.run(
                     [ self.test_loss, self.test_state, self.test_logits, self.test_action_idx, self.chosen_relation],
@@ -564,6 +568,8 @@ if __name__ == '__main__':
     config.gpu_options.allow_growth = False
     config.log_device_placement = False
 
+    options['num_choices'] = len(options['entity_vocab'])
+
     #Training
     if not options['load_model']:
         trainer = Trainer(options)
@@ -582,6 +588,7 @@ if __name__ == '__main__':
         logger.info("Skipping training")
         logger.info("Loading model from {}".format(options["model_load_dir"]))
 
+    options['test_rollouts'] = 20
     trainer = Trainer(options)
     if options['load_model']:
         save_path = options['model_load_dir']
@@ -590,18 +597,18 @@ if __name__ == '__main__':
 
     with tf.Session(config=config) as sess:
         trainer.initialize(restore=save_path, sess=sess)
-        trainer.test_rollouts = 20
+        #trainer.test_rollouts = 20
 
         os.mkdir(path_logger_file + "/" + "test_beam")
         trainer.path_logger_file_ = path_logger_file + "/" + "test_beam" + "/paths"
         with open(output_dir + '/scores.txt', 'a') as score_file:
             score_file.write("Test (beam) scores with best model from " + save_path + "\n")
         trainer.test_environment = trainer.test_test_environment
-        trainer.test_environment.test_rollouts = 80
+        #trainer.test_environment.test_rollouts = 20
 
         trainer.test(sess, beam=True, print_paths=True, save_model=False)
 
         print(options['nell_evaluation'])
         if options['nell_evaluation'] == 1:
-            nell_eval(path_logger_file + "/" + "test_beam/" + "pathsanswers", trainer.data_input_dir+'/sort_test.pairs' )
+            nell_eval(path_logger_file + "/" + "test_beam/" + "pathsanswers", trainer.data_input_dir + "/sort_test.pairs")
 

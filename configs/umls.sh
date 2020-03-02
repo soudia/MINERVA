@@ -2,7 +2,7 @@
 
 data_input_dir="/mnt/datasets/public/ousmane/dqna/data/umls/"
 vocab_dir="/mnt/datasets/public/ousmane/dqna/data/umls/vocab"
-total_iterations=2000
+total_iterations=200
 path_length=2
 hidden_size=50
 embedding_size=50

@@ -43,11 +43,11 @@ class Agent(object):
             self.m = 2
 
         self.attention_size = self.hidden_size
-        self.belief_inDim = self.m * self.embedding_size
-        self.belief_outDim = 2 * self.hidden_size
+        self.belief_inp_dim = self.m * self.embedding_size
+        self.belief_out_dim = 2 * self.hidden_size
 
-        self.action_inDim = self.m * self.hidden_size + self.belief_outDim 
-        self.action_outDim = 4 * self.m * self.embedding_size
+        self.action_inp_dim = 2 * self.m * self.embedding_size + self.belief_out_dim
+        self.action_out_dim = 4 * self.m * self.hidden_size
 
         with tf.variable_scope("action_lookup_table"):
             self.action_embedding_placeholder = tf.placeholder(tf.float32,
@@ -74,11 +74,11 @@ class Agent(object):
             cells = []
             for _ in range(self.LSTM_Layers):
                 cells.append(
-                      DQNALSTMCell(self.batch_size, self.m * self.hidden_size, self.action_outDim,
-                                   self.belief_outDim, use_peepholes=True, state_is_tuple=True))
-            self.reasoning_step = tf.contrib.rnn.MultiRNNCell(cells, state_is_tuple=True)
+                      DQNALSTMCell(self.m * self.hidden_size, self.action_out_dim, self.belief_out_dim,
+                                   use_peepholes=True, state_is_tuple=True))
+            self.reasoning_step = tf.nn.rnn_cell.MultiRNNCell(cells, state_is_tuple=True)
 
-        self.belief_MLP = ops.initBeliefEstimator(self.batch_size, self.belief_inDim, self.belief_outDim,
+        self.belief_MLP = ops.initBeliefEstimator(self.batch_size, self.belief_inp_dim, self.belief_out_dim,
                                                   [100, 150], 2 * self.hidden_size, self.attention_size)
 
 
@@ -86,10 +86,10 @@ class Agent(object):
         return (self.LSTM_Layers, 2, None, self.m * self.hidden_size)
 
 
-    def policy_MLP(self, state):
-        with tf.variable_scope("MLP_for_policy"):
-            hidden = tf.layers.dense(state, self.action_inDim, activation=tf.nn.relu)
-            output = tf.layers.dense(hidden, self.action_outDim, activation=tf.nn.relu)
+    def policy(self, inputs):
+        with tf.variable_scope("policy"):
+            hidden = tf.layers.Dense(self.action_inp_dim, activation=tf.nn.relu)(inputs)
+            output = tf.layers.Dense(self.action_out_dim, activation=tf.nn.relu)(hidden)
         return output
 
 
@@ -110,29 +110,17 @@ class Agent(object):
         prev_action_embedding = self.action_encoder(prev_relation, current_entities)
 
         # MLP for policy
-        inputs = tf.concat([prev_action_embedding, belief], axis=-1)
-        logits = self.policy_MLP(inputs) # logits: [B, 4D]
+        logits = self.policy(tf.concat([query_embedding, prev_action_embedding, belief], axis=-1)) # [B, 4D]
         prev_state = tuple([prev_state[i].set_action(logits) for i in range(self.LSTM_Layers)])
 
         # 1. one step of rnn
-        #FIXME: dim(prev_action_embedding)[0] ! dim(query_embedding)[0], see trainer.py #340
-        state_query_concat = tf.concat([prev_action_embedding, query_embedding], axis=-1)
-        output, new_state = self.reasoning_step(state_query_concat, prev_state)  # output: [B, 2D]
-
-        # Get state vector
-        #prev_entity = tf.nn.embedding_lookup(self.entity_lookup_table, current_entities)
-        #if self.use_entity_embeddings:
-        #    state = tf.concat([output, prev_entity], axis=-1)
-        #else:
-        #    state = output
+        output, new_state = self.reasoning_step(prev_action_embedding, prev_state)  # output: [B, 2D]
         candidate_action_embeddings = self.action_encoder(next_relations, next_entities)
-        #state_query_concat = tf.concat([state, query_embedding], axis=-1)
 
         output_expanded = tf.expand_dims(output, axis=1)  # [B, 1, 2D]
         prelim_scores = tf.reduce_sum(tf.multiply(candidate_action_embeddings, output_expanded), axis=2)
 
         # Masking PAD actions
-
         comparison_tensor = tf.ones_like(next_relations, dtype=tf.int32) * self.rPAD  # matrix to compare
         mask = tf.equal(next_relations, comparison_tensor)  # The mask
         dummy_scores = tf.ones_like(prelim_scores) * -99999.0  # the base matrix to choose from if dummy relation

@@ -52,7 +52,6 @@ def read_options():
         parsed = vars(parser.parse_args())
     except IOError as msg:
         parser.error(str(msg))
-    parsed['input_files'] = [parsed['data_input_dir'] + '/' + parsed['input_file']]
 
     parsed['use_entity_embeddings'] = (parsed['use_entity_embeddings'] == 1)
     parsed['train_entity_embeddings'] = (parsed['train_entity_embeddings'] == 1)
@@ -61,9 +60,16 @@ def read_options():
     parsed['pretrained_embeddings_action'] = ""
     parsed['pretrained_embeddings_entity'] = ""
 
-    parsed['output_dir'] = parsed['base_output_dir'] + '/' + str(uuid.uuid4())[:4]+'_'+str(parsed['path_length'])+'_'+str(parsed['beta'])+'_'+str(parsed['test_rollouts'])+'_'+str(parsed['Lambda'])
+    for key in parsed.keys():
+        if 'dir' in key:
+            parsed[key] = parsed[key].rstrip("/")
 
-    parsed['model_dir'] = parsed['output_dir']+'/'+ 'model/'
+    parsed['input_files'] = [parsed['data_input_dir'] + '/' + parsed['input_file']]
+    parsed['output_dir'] = parsed['base_output_dir'] + "/" + str(uuid.uuid4())[:4] \
+                         + '_' + str(parsed['path_length']) + '_' + str(parsed['beta']) \
+                         + '_' + str(parsed['test_rollouts']) + '_' + str(parsed['Lambda'])
+
+    parsed['model_dir'] = parsed['output_dir'] + '/model/'
 
     parsed['load_model'] = (parsed['load_model'] == 1)
 
@@ -71,10 +77,10 @@ def read_options():
 
     # Logger##
     parsed['path_logger_file'] = parsed['output_dir']
-    parsed['log_file_name'] = parsed['output_dir'] +'/log.txt'
+    parsed['log_file_name'] = parsed['output_dir'] + '/log.txt'
     os.makedirs(parsed['output_dir'])
     os.mkdir(parsed['model_dir'])
-    with open(parsed['output_dir']+'/config.txt', 'w') as out:
+    with open(parsed['output_dir'] + '/config.txt', 'w') as out:
         pprint(parsed, stream=out)
 
     # print and return
