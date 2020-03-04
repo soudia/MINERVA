@@ -34,7 +34,7 @@ def read_options():
     parser.add_argument("--base_output_dir", default='', type=str)
     parser.add_argument("--total_iterations", default=2000, type=int)
     parser.add_argument("--algorithm", default="", type=str)
-    parser.add_argument("--intrinsic_reward", default=0, type=int)
+    parser.add_argument("--intrinsic_reward", default=1, type=int)
     parser.add_argument("--seed", default=1234, type=int)
 
     parser.add_argument("--Lambda", default=0.0, type=float)

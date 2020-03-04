@@ -13,7 +13,8 @@ import tensorflow as tf
 class Episode(object):
 
     def __init__(self, graph, data, params):
-        self.grapher = graph
+
+        start_entities, query_relation, end_entities, all_answers, all_paths, all_lengths = data
         self.batch_size, self.path_len, num_rollouts, test_rollouts, mode, batcher, reward_shaper = params
         self.mode = mode
         if self.mode == 'train':
@@ -21,16 +22,15 @@ class Episode(object):
         else:
             self.num_rollouts = test_rollouts
 
+        self.grapher = graph
         self.current_hop = 0
         self.reward_shaper = reward_shaper
-        start_entities, query_relation, end_entities, all_answers, all_paths, all_lengths = data
         self.no_examples = start_entities.shape[0]
         self.positive_reward = reward_shaper.positive_reward
         self.negative_reward = reward_shaper.negative_reward
+        self.rollout_size = self.batch_size * self.num_rollouts
 
         start_entities = np.repeat(start_entities, self.num_rollouts)
-        all_paths = np.repeat(all_paths, self.num_rollouts)
-        all_lengths = np.repeat(all_lengths, self.num_rollouts)
         batch_query_relation = np.repeat(query_relation, self.num_rollouts)
         end_entities = np.repeat(end_entities, self.num_rollouts)
 
@@ -40,8 +40,7 @@ class Episode(object):
         self.query_relation = batch_query_relation
         self.all_answers = all_answers
 
-        self.relational_lengths = all_lengths
-        self.relational_paths = np.reshape(all_paths, [self.batch_size * self.num_rollouts, self.path_len])
+        self.all_paths, self.all_lengths = all_paths, all_lengths
 
         next_actions = self.grapher.return_next_actions(self.current_entities, self.start_entities, self.query_relation,
                                                         self.end_entities, self.all_answers, self.current_hop == self.path_len - 1,
@@ -58,8 +57,8 @@ class Episode(object):
         return self.query_relation
 
     def get_reward(self):
-        last_step = self.current_hop == self.path_len - 1
-        return self.reward_shaper.get_reward(self.current_entities, self.end_entities, self.relational_paths, last_step)
+        last_step = self.current_hop == self.path_len # because self.current_hop starts at 1 in __call__
+        return self.reward_shaper.get_reward(self.current_entities, self.end_entities, self.all_paths, last_step)
 
     def __call__(self, action):
         self.current_hop += 1
@@ -76,7 +75,7 @@ class Episode(object):
 
 
 class RewardShaper(object):
-    def __init__(self, params, scope='reward_shaping'):
+    def __init__(self, params, mode='train', scope='reward_shaping'):
         self.path_length = params['path_length']
         self.batch_size  = params['batch_size']
         self.LSTM_Layers = params['LSTM_layers']
@@ -94,52 +93,74 @@ class RewardShaper(object):
         else:
             self.m = 2
 
+        self.mode = mode
+        if self.mode == 'train':
+            self.num_rollouts = params['num_rollouts']
+        else:
+            self.num_rollouts = params['test_rollouts']
+
+        self.rollout_size = self.batch_size * self.num_rollouts
+
         if self._intrinsic_reward:
+            cells = []
             with tf.variable_scope(scope):
                 for _ in range(self.LSTM_Layers):
                     cells.append(tf.nn.rnn_cell.BasicLSTMCell(self.m * self.hidden_size))
             self.reward_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(cells, state_is_tuple=True)
-            self.state = self.reward_shaper.zero_state(self.batch_size, dtype=tf.float32)
 
-        lookup_table = params['entity_lookup_table']
-        self.ent_embedding = lambda entities: tf.nn.embedding_lookup(lookup_table, entities)
+        self.lookup_table = params['entity_lookup_table']
+        self.embed = lambda entities: tf.nn.embedding_lookup(lookup_table, entities)
 
-        lookup_table = params['relation_lookup_table']
-        self.rel_embedding = lambda relations: tf.nn.embedding_lookup(lookup_table, relations)
 
-    def evaluate(self, path_embeddings, sequence_lengths=None):
-        enc_outputs, _ = tf.nn.dynamic_rnn(self.reward_rnn_cell, path_embeddings,
-                                 dtype=tf.float32, sequence_length=sequence_lengths)
-        return enc_outputs
+    def encode(self, inference_path, sequence_length=None):
+        lookup = lambda inputs: tf.nn.embedding_lookup(self.lookup_table, inputs)
+        embeddings = tf.map_fn(fn=lookup, elems=inference_path, dtype=tf.float32)
+
+        length = len(self.inference_path)
+        enc_outputs, _ = tf.nn.dynamic_rnn(self.reward_rnn_cell, embeddings,
+                               dtype=tf.float32, sequence_length=sequence_length)
+        return tf.reshape(enc_outputs, [self.num_rollouts, self.batch_size, length, -1]) 
 
 
     def cross_entropy(self, path_embeddings, sequence_lengths, labels):
-        enc_outputs = self.evaluate(path_embeddings, sequence_lengths)
-        xent_loss = \
-            tf.nn.sparse_softmax_cross_entropy_with_logits(
+        enc_outputs = self.encode(path_embeddings, sequence_lengths)
+        enc_outputs = tf.layers.Dense(self.num_choices)(enc_outputs)
+        return tf.nn.sparse_softmax_cross_entropy_with_logits(
                                     logits=enc_outputs, labels=labels)
-        return xent_loss
 
 
-    def intrinsic_reward(self, time, path_embeddings, relational_paths):
-        id_time = tf.tile([time], (self.batch_size, ))
-        id_time = tf.expand_dims(id_time, 1)
-        indices = tf.range(self.batch_size)
-        indices = tf.expand_dims(indices, 1)
-        indices = tf.concat([indices, id_time], 1)
+    def intrinsic_reward(self, correct, inference_path):
+        id_time, results = len(inference_path), []
+        indices = tf.expand_dims(tf.range(self.batch_size), 1)
 
-        targets = tf.gather_nd(relational_paths, indices)
-        targets = tf.cast(targets, tf.int32)
+        def get_target(time):
+            id_time = tf.tile([time], (self.batch_size,))
+            id_time = tf.expand_dims(id_time, 1)
+            indexes = tf.concat([indices, id_time], 1)
 
-        gather_fn = lambda inputs : tf.gather(inputs[0], inputs[1])
-        prob_fn = lambda logits, targets, activation_fn=tf.nn.softmax: \
-            tf.map_fn(gather_fn, elems=(activation_fn(logits), targets),
-                      parallel_iterations=self.batch_size, dtype=tf.float32)
+            targets = tf.gather_nd(correct, indexes)
+            targets = tf.cast(targets, tf.int32)
+            targets = tf.expand_dims(targets, 1)
 
-        enc_outputs = self.evaluate(path_embeddings)
-        rewards = tf.reduce_prod(tf.map_fn(fn=reward_fn, elems=enc_outputs), 0)
+            return tf.concat([indices, targets], 1)
 
-        return rewards
+        enc_outputs = self.encode(inference_path)
+
+        def projection(inputs, reuse=tf.AUTO_REUSE):
+            with tf.variable_scope("transform", reuse=reuse):
+                h = tf.layers.Dense(self.num_choices, activation=tf.nn.softmax)(inputs)
+            return h
+
+        reward_fn = lambda inputs: tf.gather_nd(inputs[0], get_target(inputs[1]))
+
+        for i in range(self.num_rollouts):
+            probs = projection(enc_outputs[i])
+            probs = tf.reshape(probs, [id_time, self.batch_size, -1])
+            results.append(tf.map_fn(reward_fn, dtype=tf.float32, 
+                  elems=(probs, tf.range(id_time)), parallel_iterations=id_time))
+
+        reward = tf.reshape(results, [self.rollout_size, id_time])
+        return tf.reduce_prod(reward, axis=1)
 
 
     def extrinsic_reward(self, current_entities, end_entities):
@@ -152,18 +173,14 @@ class RewardShaper(object):
         return reward
 
 
-    def get_reward(self, current_entities, end_entities, relational_paths, last_step=False):
+    def get_reward(self, current_entities, end_entities, paths, last_step=False):
         if self._intrinsic_reward and not last_step:
             self.inference_path.append(current_entities)
-            path_embeddings = tf.map_fn(fn=self.ent_embedding, elems=self.inference_path, dtype=tf.float32)
-            path_embeddings = tf.reshape(path_embeddings, [self.batch_size, self.path_length, -1])
-            time = tf.constant(len(self.inference_path))
-            reward = self.intrinsic_reward(time, path_embeddings, relational_paths)
+            reward = self.intrinsic_reward(paths, self.inference_path)
         else:
             reward = self.extrinsic_reward(current_entities, end_entities)
             self.inference_path.clear()
         return reward
-
 
 
 class env(object):
@@ -200,7 +217,7 @@ class env(object):
                                              entity_vocab=params['entity_vocab'],
                                              relation_vocab=params['relation_vocab'])
 
-        self.reward_shaper = RewardShaper(params)
+        self.reward_shaper = RewardShaper(params, mode=mode)
 
 
     def get_episodes(self):

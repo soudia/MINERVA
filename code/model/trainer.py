@@ -42,8 +42,9 @@ class Trainer(object):
         self.agent = Agent(params)
         self.save_path = None
 
+        self.intrinsic_reward = params['intrinsic_reward']
+
         params['entity_lookup_table'] = self.agent.entity_lookup_table
-        params['relation_lookup_table'] = self.agent.relation_lookup_table
 
         self.train_environment = env(params, 'train')
         self.dev_test_environment = env(params, 'dev')
@@ -240,6 +241,8 @@ class Trainer(object):
             # for each time step
             loss_before_regularization = []
             logits = []
+            # get intrinsic rewards
+            intrinsic_rewards = []
             for i in range(self.path_length):
 
                 feed_dict[i][self.candidate_relation_sequence[i]] = state['next_relations']
@@ -251,6 +254,8 @@ class Trainer(object):
                 logits.append(per_example_logits)
                 # action = np.squeeze(action, axis=1)  # [B,]
                 state = episode(idx)
+                if self.intrinsic_reward:
+                    intrinsic_rewards.append(episode.get_reward())
 
             loss_before_regularization = np.stack(loss_before_regularization, axis=1)
 
