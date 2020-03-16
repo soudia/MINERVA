@@ -3,7 +3,6 @@ import random
 import itertools
 import collections
 import numpy as np
-from dnn import DNN 
 import tensorflow as tf
 from dqna_cell import DQNALSTMCell
 from collections import defaultdict
