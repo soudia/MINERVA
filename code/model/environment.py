@@ -1,6 +1,6 @@
+from __future__ import division
 from __future__ import absolute_import
 import tensorflow as tf
-from __future__ import division
 import numpy as np
 from code.data.feed_data import RelationEntityBatcher
 from code.data.grapher import RelationEntityGrapher

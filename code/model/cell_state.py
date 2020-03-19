@@ -2,18 +2,13 @@ import numpy as np
 import tensorflow as tf
 import collections
 
-from tensorflow.python.platform import flags
-
-FLAGS = flags.FLAGS
-
 DQNACellTuple = collections.namedtuple("DQNACellTuple", ("control", "actions", "beliefs"))
 DQNACellTuple.__new__.__defaults__ = ([],) * len(DQNACellTuple._fields)
 
 class DQNACellState(tf.nn.rnn_cell.LSTMStateTuple):
     def __new__(cls, c, h, a=None, b=None):
         self = super(DQNACellState, cls).__new__(cls, c, h)
-        self.a = a if a is not None else tf.zeros([FLAGS.batchSize, 4*100])
-        self.b = b if b is not None else tf.zeros([FLAGS.batchSize, FLAGS.hiDim])
+        self.a, self.b = a, b
         self.cell_tuple = self._newCellTuple()
         return self
 
@@ -31,9 +26,6 @@ class DQNACellState(tf.nn.rnn_cell.LSTMStateTuple):
         return DQNACellTuple(control, actions, beliefs)
 
     def append(self, c, h, a, b):
-        a = a if a is not None else tf.ones([FLAGS.batchSize, 4*100])
-        b = b if b is not None else tf.random_normal(
-                     shape=[FLAGS.batchSize, FLAGS.hiDim], stddev=.01)
         self.cell_tuple.actions.append(a)
         self.cell_tuple.beliefs.append(b)
         self.cell_tuple.control.append((c, h))
@@ -42,12 +34,14 @@ class DQNACellState(tf.nn.rnn_cell.LSTMStateTuple):
     def set_belief(self, b):
         if b is None:
             raise ValueError("belief is not valid!")
+        self.b = b
         self.cell_tuple.beliefs.append(b)
         return self
 
     def set_action(self, a):
         if a is None:
             raise ValueError("action is not valid!")
+        self.a = a
         self.cell_tuple.actions.append(a)
         return self
 

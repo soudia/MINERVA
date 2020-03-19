@@ -22,7 +22,7 @@ def clip_grad(grads_vars, configs):
     gradients, _ = tf.clip_by_global_norm(
                        gradients,
                        configs["grad_clip_norm"],
-                       use_norm=tf.global_norm(gradients))
+                       use_norm=tf.linalg.global_norm(gradients))
     grads_vars = zip(gradients, variables)
     return grads_vars
 
@@ -41,7 +41,7 @@ def gradient_update(weights, grads, configs, lr=1e-3):
 def clip_if_not_none(grad, min_value, max_value):
     if grad is None:
         grad = tf.constant([0.])
-    grad = tf.where(tf.is_nan(grad), tf.zeros_like(grad), grad)
+    grad = tf.where(tf.math.is_nan(grad), tf.zeros_like(grad), grad)
     return tf.clip_by_value(grad, min_value, max_value)
 
 '''
@@ -50,7 +50,7 @@ Uses random_normal initialization if 1d, otherwise uses xavier.
 '''
 def getWeight(shape, name = ""):
     with tf.variable_scope("weights"):               
-        initializer = tf.contrib.layers.xavier_initializer()      
+        initializer = tf.initializers.GlorotUniform()
         W = tf.get_variable("weight" + name, shape = shape, initializer = initializer)
         
     return W
@@ -60,7 +60,7 @@ Initializes a weight matrix variable given a shape and a name. Uses xavier
 '''
 def getKernel(shape, name = ""):
     with tf.variable_scope("kernels"):               
-        initializer = tf.contrib.layers.xavier_initializer()
+        initializer = tf.initializers.GlorotUniform()
         W = tf.get_variable("kernel" + name, shape = shape, initializer = initializer)
     return W
 
@@ -245,7 +245,7 @@ Used to prepare logits before softmax.
 '''
 def expMask(seq, seqLength):
     maxLength = tf.shape(seq)[-1]
-    mask = (tf.to_float(tf.logical_not(tf.sequence_mask(seqLength, maxLength)))) * (-inf)
+    mask = (tf.cast(tf.logical_not(tf.sequence_mask(seqLength, maxLength))), tf.float32) * (-inf)
     masked = seq + mask
     return masked
 
@@ -254,7 +254,7 @@ Computes seq2seq loss between logits and target sequences, with given lengths.
 '''
 def seq2SeqLoss(logits, targets, lengths):
     mask = tf.sequence_mask(lengths, maxlen = tf.shape(targets)[1])
-    loss = tf.contrib.seq2seq.sequence_loss(logits, targets, tf.to_float(mask))
+    loss = tf.contrib.seq2seq.sequence_loss(logits, targets, tf.cast(mask, tf.float32))
     return loss
 
 '''
@@ -265,12 +265,12 @@ Computes seq2seq loss between logits and target sequences, with given lengths.
 def seq2seqAcc(preds, targets, lengths):
     mask = tf.sequence_mask(lengths, maxlen = tf.shape(targets)[1])
     corrects = tf.logical_and(tf.equal(preds, targets), mask)
-    numCorrects = tf.reduce_sum(tf.to_int32(corrects), axis = 1)
+    numCorrects = tf.reduce_sum(tf.cast(corrects, tf.int32), axis = 1)
     
-    acc1 = tf.to_float(numCorrects) / (tf.to_float(lengths) + eps) # add small eps instead?
+    acc1 = tf.cast(numCorrects, tf.float32) / (tf.cast(lengths, tf.float32) + eps) # add small eps instead?
     acc1 = tf.reduce_mean(acc1)  
     
-    acc2 = tf.to_float(tf.equal(numCorrects, lengths))
+    acc2 = tf.cast(tf.equal(numCorrects, lengths), tf.float32)
     acc2 = tf.reduce_mean(acc2)      
 
     return acc1, acc2
@@ -606,7 +606,7 @@ def multigridRNNLayer(features, h, w, dim, name = "", reuse = None):
 Belief sampling: sampling a belief vector based on some contextual information. Such
 information is composed by previous beliefs and recurrent states
 '''
-def initBeliefEstimator(dim_input, dim_output, hiddens, hidden_size, attention_size, estimator="LVM"):
+def initBeliefEstimator(batch_size, dim_input, dim_output, hiddens, hidden_size, attention_size, estimator="LVM"):
     '''
        Args:
           observations: input at time step t-1
@@ -619,6 +619,7 @@ def initBeliefEstimator(dim_input, dim_output, hiddens, hidden_size, attention_s
     }
 
     estimator_belief = models[estimator](
+                            batch_size,
                             dim_input,
                             dim_output,
                             hiddens,

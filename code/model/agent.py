@@ -126,7 +126,7 @@ class Agent(object):
         scores = tf.where(mask, dummy_scores, prelim_scores)  # [B, MAX_NUM_ACTIONS]
 
         # 4 sample action
-        action = tf.to_int32(tf.multinomial(logits=scores, num_samples=1))  # [B, 1]
+        action = tf.cast(tf.random.categorical(logits=scores, num_samples=1), tf.int32)  # [B, 1]
 
         # loss
         # 5a.
@@ -168,7 +168,7 @@ class Agent(object):
                     scope.reuse_variables()
                     hiddens = tf.concat(all_hiddens, axis=-1)
                     beliefs = tf.concat(all_beliefs, axis=-1)
-                    c, h = tf.split(state[0], num_or_size_splits=2, axis=0)
+                    _, h = tf.split(state[0], num_or_size_splits=2, axis=0)
                     belief = self.belief_MLP(tf.squeeze(h, 0), hiddens, beliefs) # belief: [B, 2D]
                 next_possible_relations = candidate_relation_sequence[t]  # [B, MAX_NUM_ACTIONS, MAX_EDGE_LENGTH]
                 next_possible_entities = candidate_entity_sequence[t]

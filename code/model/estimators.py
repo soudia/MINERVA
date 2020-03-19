@@ -3,10 +3,7 @@ import ops
 import dnn
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.platform import flags
 import collections
-
-FLAGS = flags.FLAGS
 
 
 class PolicyEstimator(dnn.DNN):
@@ -21,7 +18,8 @@ class PolicyEstimator(dnn.DNN):
              Actor threads that don't update their local models and don't need
               train ops would set this to false.
     """
-    def __init__(self, dim_input, dim_output, n_hiddens=[], scope=None):
+    def __init__(self, batch_size, dim_input, dim_output, n_hiddens=[], scope=None):
+        self.batch_size = batch_size
         super(PolicyEstimator, self).__init__(dim_input, n_hiddens, dim_output)
 
 
@@ -43,7 +41,7 @@ class PolicyEstimator(dnn.DNN):
         entropy_mean = tf.reduce_mean(entropy, name="entropy_mean")
 
         # get the predictions for the chosen actions only
-        gather_indices = tf.range(FLAGS.batchSize) * tf.shape(probs)[1]
+        gather_indices = tf.range(self.batch_size) * tf.shape(probs)[1]
         picked_action_probs = tf.gather(tf.reshape(probs, [-1]), gather_indices)
 
         losses = - (tf.log(picked_action_probs) * target + 0.01 * entropy)
@@ -91,6 +89,7 @@ class BeliefEstimator(dnn.DNN):
        Belief approximator. Returns beliefs for a batch of observations
     """
     def __init__(self,
+                 batch_size,
                  dim_input,
                  dim_output,
                  n_hiddens=[200, 150],
@@ -100,8 +99,9 @@ class BeliefEstimator(dnn.DNN):
                  attend_belief=False,
                  name="attention"):
 
+        self.batch_size = batch_size
         self.h_size = h_size
-        dim_input = dim_input + a_size
+        dim_input = dim_input + h_size
         super(BeliefEstimator, self).__init__(dim_input, n_hiddens, dim_output)
 
         self.rec_attn_net = collections.OrderedDict()
@@ -225,7 +225,7 @@ class BeliefEstimator(dnn.DNN):
         blf_outputs, blf_alphas = blf_results
 
         x_product = tf.multiply(ctx_outputs, blf_outputs)
-        x_product = tf.reshape(x_product, [-1, FLAGS.batchSize, self.h_size])
+        x_product = tf.reshape(x_product, [-1, self.batch_size, self.h_size])
         x_product = tf.reduce_sum(x_product, axis=0)
         inputs = tf.concat([observation, x_product], axis=1)
         belief = self.nth_hidden(self.belief_net, inputs, activation_fn)

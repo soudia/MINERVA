@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-data_input_dir="/mnt/datasets/public/ousmane/dqna/data/umls/"
-vocab_dir="/mnt/datasets/public/ousmane/dqna/data/umls/vocab"
+script_dir="code/model"
+data_input_dir="datasets/data_preprocessed/umls/"
+vocab_dir="datasets/data_preprocessed/umls/vocab"
 total_iterations=200
 path_length=2
 hidden_size=50
