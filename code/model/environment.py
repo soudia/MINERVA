@@ -56,8 +56,7 @@ class Episode(object):
         return self.query_relation
 
     def get_reward(self):
-        # because self.current_hop starts at 1 in __call__
-        last_step = self.current_hop == self.path_len
+        last_step = self.current_hop == self.path_len # because self.current_hop starts at 1 in __call__
         return self.reward_shaper.get_reward(self.current_entities, self.end_entities, self.all_paths, last_step)
 
     def __call__(self, action):
@@ -108,29 +107,18 @@ class RewardShaper(object):
                 for _ in range(self.LSTM_Layers):
                     cells.append(tf.nn.rnn_cell.BasicLSTMCell(
                         self.m * self.hidden_size))
-            self.reward_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(
-                cells, state_is_tuple=True)
+                self.reward_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(
+                    cells, state_is_tuple=True)
 
         self.lookup_table = params['entity_lookup_table']
-        self.embed = lambda entities: tf.nn.embedding_lookup(
-            self.lookup_table, entities)
+        self.embed = lambda entities: tf.nn.embedding_lookup(self.lookup_table, entities)
 
     def encode(self, inference_path, sequence_length=None):
-        def lookup(inputs): return tf.nn.embedding_lookup(
-            self.lookup_table, inputs)
-        embeddings = tf.map_fn(
-            fn=lookup, elems=inference_path, dtype=tf.float32)
-
-        length = len(self.inference_path)
-        enc_outputs, _ = tf.nn.dynamic_rnn(self.reward_rnn_cell, embeddings,
+        def lookup(inputs): return self.embed(inputs)
+        path_embeddings = tf.map_fn(fn=lookup, elems=inference_path, dtype=tf.float32)
+        enc_outputs, _ = tf.nn.dynamic_rnn(self.reward_rnn_cell, path_embeddings,
                                            dtype=tf.float32, sequence_length=sequence_length)
-        return tf.reshape(enc_outputs, [self.num_rollouts, self.batch_size, length, -1])
-
-    def cross_entropy(self, path_embeddings, sequence_lengths, labels):
-        enc_outputs = self.encode(path_embeddings, sequence_lengths)
-        enc_outputs = tf.layers.Dense(self.num_choices)(enc_outputs)
-        return tf.nn.sparse_softmax_cross_entropy_with_logits(
-            logits=enc_outputs, labels=labels)
+        return tf.reshape(enc_outputs, [self.batch_size, -1])
 
     def intrinsic_reward(self, correct, inference_path):
         id_time, results = len(inference_path), []
@@ -147,8 +135,6 @@ class RewardShaper(object):
 
             return tf.concat([indices, targets], 1)
 
-        enc_outputs = self.encode(inference_path)
-
         def projection(inputs, reuse=tf.AUTO_REUSE):
             with tf.variable_scope("transform", reuse=reuse):
                 h = tf.layers.Dense(
@@ -158,6 +144,8 @@ class RewardShaper(object):
         def reward_fn(inputs): return tf.gather_nd(
             inputs[0], get_target(inputs[1]))
 
+        enc_outputs = self.encode(inference_path)
+        enc_outputs = tf.reshape(enc_outputs, [self.num_rollouts, self.batch_size, -1])
         for i in range(self.num_rollouts):
             probs = projection(enc_outputs[i])
             probs = tf.reshape(probs, [id_time, self.batch_size, -1])
@@ -220,7 +208,8 @@ class env(object):
                                              entity_vocab=params['entity_vocab'],
                                              relation_vocab=params['relation_vocab'])
 
-        self.reward_shaper = RewardShaper(params, mode=mode)
+        scope = params.get('shaper_scope', 'reward_shaping')
+        self.reward_shaper = RewardShaper(params, mode=mode, scope=scope)
 
     def get_episodes(self):
         params = self.batch_size, self.path_len, self.num_rollouts, self.test_rollouts, self.mode, self.batcher, self.reward_shaper

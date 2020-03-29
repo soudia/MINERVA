@@ -7,6 +7,7 @@ import pickle
 import numpy as np
 import urllib.request as url
 import tensorflow as tf
+import scipy
 
 from collections import defaultdict
 

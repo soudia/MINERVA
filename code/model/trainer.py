@@ -37,14 +37,14 @@ class Trainer(object):
     def __init__(self, params):
 
         # transfer parameters to self
-        for key, val in params.items(): setattr(self, key, val);
+        for key, val in params.items(): setattr(self, key, val)
 
         self.agent = Agent(params)
         self.save_path = None
 
-        self.intrinsic_reward = params['intrinsic_reward']
-
         params['entity_lookup_table'] = self.agent.entity_lookup_table
+
+        self.inference_scope = params.get('inference_scope', 'reward_shaping')
 
         self.train_environment = env(params, 'train')
         self.dev_test_environment = env(params, 'dev')
@@ -57,8 +57,16 @@ class Trainer(object):
         self.rPAD = self.relation_vocab['PAD']
         # optimize
         self.baseline = ReactiveBaseline(l=self.Lambda)
-        self.optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        self.train_optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        self.infer_optimizer = tf.train.AdamOptimizer(self.learning_rate)
 
+    def path_inference_loss(self):
+        with tf.variable_scope("reward_shaping", tf.AUTO_REUSE):
+            dim_output = self.agent.m * self.agent.hidden_size
+            path_embeddings = tf.reshape(self.path_embeddings, [-1, dim_output])
+            enc_outputs = tf.layers.Dense(self.num_choices)(path_embeddings) # enc_outputs
+        return tf.nn.sparse_softmax_cross_entropy_with_logits(
+                    logits=enc_outputs, labels=tf.reshape(self.all_paths, [-1]))
 
     def calc_reinforce_loss(self):
         loss = tf.stack(self.per_example_loss, axis=1)  # [B, T]
@@ -94,6 +102,11 @@ class Trainer(object):
         self.first_state_of_test = tf.placeholder(tf.bool, name="is_first_state_of_test")
         self.query_relation = tf.placeholder(tf.int32, [None], name="query_relation")
         self.range_arr = tf.placeholder(tf.int32, shape=[None, ])
+        self.all_paths = tf.get_variable(name="all_paths", dtype=tf.int32, trainable=None, 
+                                        shape=(self.batch_size, self.path_length))
+        self.path_embeddings = \
+            tf.get_variable(name="path_embedding", dtype=tf.float32, shape=(self.batch_size,
+                            self.path_length*self.agent.m * self.agent.hidden_size), trainable=None)
         self.global_step = tf.Variable(0, trainable=False)
         self.decaying_beta = tf.train.exponential_decay(self.beta, self.global_step,
                                                    200, 0.90, staircase=False)
@@ -102,8 +115,6 @@ class Trainer(object):
         # to feed in the discounted reward tensor
         self.cum_discounted_reward = tf.placeholder(tf.float32, [None, self.path_length],
                                                     name="cumulative_discounted_reward")
-
-
 
         for t in range(self.path_length):
             next_possible_relations = tf.placeholder(tf.int32, [None, self.max_num_actions],
@@ -125,9 +136,10 @@ class Trainer(object):
             self.query_relation, self.range_arr, self.first_state_of_test, self.path_length)
 
         self.loss_op = self.calc_reinforce_loss()
+        self.inference_loss = self.path_inference_loss()
 
         # backprop
-        self.train_op = self.bp(self.loss_op)
+        self.train_op = self.bp(self.loss_op, self.inference_loss)
 
         # Building the test graph
         self.prev_state = tf.placeholder(tf.float32, self.agent.get_mem_shape(), name="memory_of_agent")
@@ -174,15 +186,21 @@ class Trainer(object):
             _ = sess.run((self.agent.entity_embedding_init),
                          feed_dict={self.agent.entity_embedding_placeholder: embeddings})
 
-    def bp(self, cost):
+    def bp(self, cost, inference_loss):
+        rvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.inference_scope)
+        grads = tf.gradients(inference_loss, rvars)
+        grads, _ = tf.clip_by_global_norm(grads, self.grad_clip_norm)
+        infer_op = self.infer_optimizer.apply_gradients(zip(grads, rvars))
+
         self.baseline.update(tf.reduce_mean(self.cum_discounted_reward))
-        tvars = tf.trainable_variables()
+        tvars = [v for v in tf.trainable_variables() if v.name not in [w.name for w in rvars]]
         grads = tf.gradients(cost, tvars)
         grads, _ = tf.clip_by_global_norm(grads, self.grad_clip_norm)
-        train_op = self.optimizer.apply_gradients(zip(grads, tvars))
-        with tf.control_dependencies([train_op]):  # see https://github.com/tensorflow/tensorflow/issues/1899
+        train_op = self.train_optimizer.apply_gradients(zip(grads, tvars))
+
+        with tf.control_dependencies([train_op, infer_op]):  # see https://github.com/tensorflow/tensorflow/issues/1899
             self.dummy = tf.constant(0)
-        return train_op
+        return tf.group([train_op, infer_op])
 
 
     def calc_cum_discounted_reward(self, rewards):
@@ -204,7 +222,7 @@ class Trainer(object):
 
     def gpu_io_setup(self):
         # create fetches for partial_run_setup
-        fetches = self.per_example_loss  + self.action_idx + [self.loss_op] + self.per_example_logits + [self.dummy]
+        fetches = self.per_example_loss  + self.action_idx + [self.inference_loss] + [self.loss_op] + self.per_example_logits + [self.dummy]
         feeds =  [self.first_state_of_test] + self.candidate_relation_sequence+ self.candidate_entity_sequence + self.input_path + \
                 [self.query_relation] + [self.cum_discounted_reward] + [self.range_arr] + self.entity_sequence
 
@@ -230,7 +248,12 @@ class Trainer(object):
         train_loss = 0.0
         start_time = time.time()
         self.batch_counter = 0
+        encoder = self.train_environment.reward_shaper.encode
         for episode in self.train_environment.get_episodes():
+
+            path_embeddings = encoder(episode.all_paths, episode.all_lengths)
+            tf.assign(self.path_embeddings, path_embeddings)
+            tf.assign(self.all_paths, episode.all_paths)
 
             self.batch_counter += 1
             h = sess.partial_run_setup(fetches=fetches, feeds=feeds)
@@ -267,7 +290,7 @@ class Trainer(object):
 
 
             # backprop
-            batch_total_loss, _ = sess.partial_run(h, [self.loss_op, self.dummy],
+            inference_loss, batch_total_loss, _ = sess.partial_run(h, [self.inference_loss, self.loss_op, self.dummy],
                                                    feed_dict={self.cum_discounted_reward: cum_discounted_reward})
 
             # print statistics
@@ -283,12 +306,12 @@ class Trainer(object):
                 raise ArithmeticError("Error in computing loss")
 
             logger.info("batch_counter: {0:4d}, num_hits: {1:7.4f}, avg. reward per batch {2:7.4f}, "
-                        "num_ep_correct {3:4d}, avg_ep_correct {4:7.4f}, train loss {5:7.4f}".
+                        "num_ep_correct {3:4d}, avg_ep_correct {4:7.4f}, train loss {5:7.4f}, inference loss {5:7.4f}".
                         format(self.batch_counter, np.sum(rewards), avg_reward, num_ep_correct,
                                (num_ep_correct / self.batch_size),
-                               train_loss))
+                               train_loss, inference_loss))
 
-            if self.batch_counter%self.eval_every == 0:
+            if self.batch_counter % self.eval_every == 0:
                 with open(self.output_dir + '/scores.txt', 'a') as score_file:
                     score_file.write("Score for iteration " + str(self.batch_counter) + "\n")
                 os.mkdir(self.path_logger_file + "/" + str(self.batch_counter))
@@ -352,10 +375,13 @@ class Trainer(object):
                 feed_dict[self.prev_state] = agent_mem
                 feed_dict[self.prev_relation] = previous_relation
 
-                loss, agent_mem, test_scores, test_action_idx, chosen_relation = sess.run(
-                    [ self.test_loss, self.test_state, self.test_logits, self.test_action_idx, self.chosen_relation],
+                inference_loss, loss, agent_mem, test_scores, test_action_idx, chosen_relation = sess.run(
+                    [ self.inference_loss, self.test_loss, self.test_state, self.test_logits, self.test_action_idx, self.chosen_relation],
                     feed_dict=feed_dict)
+                loss = np.mean(loss)
+                inference_loss = np.mean(inference_loss)
 
+                logger.info("losses: {i_loss:4.2f} - {loss:4.2f} ".format(i_loss=inference_loss, loss=loss))
 
                 if beam:
                     k = self.test_rollouts
