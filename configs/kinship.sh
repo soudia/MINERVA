@@ -3,7 +3,7 @@
 script_dir="code/model"
 data_input_dir="datasets/data_preprocessed/kinship/"
 vocab_dir="datasets/data_preprocessed/kinship/vocab"
-total_iterations=2000
+total_iterations=200
 path_length=2
 hidden_size=50
 embedding_size=50
@@ -15,5 +15,5 @@ train_entity_embeddings=0
 train_relation_embeddings=1
 base_output_dir="output/kinship/"
 load_model=0
-model_load_dir="/home/ousmane/MINERVA/saved_models/kinship/model.ckpt"
+model_load_dir="saved_models/kinship/model.ckpt"
 nell_evaluation=0

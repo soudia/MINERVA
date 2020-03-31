@@ -45,7 +45,7 @@ class Agent(object):
         self.belief_inp_dim = self.m * self.embedding_size
         self.belief_out_dim = 2 * self.hidden_size
 
-        self.action_inp_dim = 2 * self.m * self.embedding_size + self.belief_out_dim
+        self.action_inp_dim = 1 * self.m * self.embedding_size + self.belief_out_dim
         self.action_out_dim = 4 * self.m * self.hidden_size
 
         with tf.variable_scope("action_lookup_table"):
@@ -85,10 +85,37 @@ class Agent(object):
         return (self.LSTM_Layers, 2, None, self.m * self.hidden_size)
 
 
-    def policy(self, inputs):
-        with tf.variable_scope("policy"):
-            hidden = tf.layers.Dense(self.action_inp_dim, activation=tf.nn.relu)(inputs)
+    def policy(self, state, observation, belief, relation_embeddings, next_relations, range_arr):
+        dim_input = 2 * self.embedding_size
+        w_omega = tf.Variable(tf.random_normal([dim_input, dim_input], stddev=0.1))
+        b_omega = tf.Variable(tf.random_normal([dim_input], stddev=0.1))
+        u_omega = tf.Variable(tf.random_normal([dim_input], stddev=0.1))
+
+        def attend(inputs):
+            with tf.name_scope('v'):
+                v = tf.tanh(tf.tensordot(inputs, w_omega, axes=1) + b_omega)
+
+            vu = tf.tensordot(v, u_omega, axes=1, name='vu')  # (B,T) shape
+            alphas = tf.nn.softmax(vu, name='alphas')  # (B,T) shape
+            output = inputs * tf.expand_dims(alphas, -1)
+            return alphas, output
+
+        scores, _ = attend(relation_embeddings) # use alphas as scores
+        _, _, chosen = self.random_categorical(range_arr, scores, next_relations)
+        chosen = tf.nn.embedding_lookup(self.relation_lookup_table, chosen)
+        cosine_sim = tf.keras.losses.CosineSimilarity(axis=1)
+        alpha = 1. - cosine_sim(belief, chosen)
+        beta = 1. - cosine_sim(observation, chosen)
+        with tf.variable_scope("policy", reuse=tf.AUTO_REUSE):
+            inputs = tf.concat([state, alpha * belief, beta * observation], -1)
+            hidden = tf.layers.Dense(2 * self.action_inp_dim, activation=tf.nn.relu)(inputs)
             output = tf.layers.Dense(self.action_out_dim, activation=tf.nn.relu)(hidden)
+        return output
+
+    def forward(self, state, scope="feed_forward"):
+        with tf.variable_scope(scope):
+            hidden = tf.layers.dense(state, 4 * self.hidden_size, activation=tf.nn.relu)
+            output = tf.layers.dense(hidden, self.m * self.embedding_size, activation=tf.nn.relu)
         return output
 
 
@@ -104,43 +131,55 @@ class Agent(object):
 
 
     def step(self, next_relations, next_entities, prev_state, prev_relation, query_embedding, current_entities,
-             belief, label_action, range_arr, first_step_of_test):
+             amplitude, belief, label_action, range_arr, first_step_of_test):
 
         prev_action_embedding = self.action_encoder(prev_relation, current_entities)
 
-        # MLP for policy
-        logits = self.policy(tf.concat([query_embedding, prev_action_embedding, belief], axis=-1)) # [B, 4D]
-        prev_state = tuple([prev_state[i].set_action(logits) for i in range(self.LSTM_Layers)])
+        prev_state = tuple([prev_state[i].set_action(amplitude) for i in range(self.LSTM_Layers)])
 
-        # 1. one step of rnn
         output, new_state = self.reasoning_step(prev_action_embedding, prev_state)  # output: [B, 2D]
         candidate_action_embeddings = self.action_encoder(next_relations, next_entities)
 
+        # Get state vector
+        prev_entity = tf.nn.embedding_lookup(self.entity_lookup_table, current_entities)
+        if self.use_entity_embeddings:
+            state = tf.concat([output, prev_entity], axis=-1)
+        else:
+            state = output
+        state_query_concat = tf.concat([state, query_embedding], axis=-1)
+        candidate_action_embeddings = self.action_encoder(next_relations, next_entities)
+        amplitude = self.policy(state_query_concat, prev_action_embedding, belief,
+                                candidate_action_embeddings, next_relations, range_arr) # [B, 4D]
+
+        output = self.forward(state_query_concat)
         output_expanded = tf.expand_dims(output, axis=1)  # [B, 1, 2D]
         prelim_scores = tf.reduce_sum(tf.multiply(candidate_action_embeddings, output_expanded), axis=2)
 
-        # Masking PAD actions
         comparison_tensor = tf.ones_like(next_relations, dtype=tf.int32) * self.rPAD  # matrix to compare
         mask = tf.equal(next_relations, comparison_tensor)  # The mask
         dummy_scores = tf.ones_like(prelim_scores) * -99999.0  # the base matrix to choose from if dummy relation
         scores = tf.where(mask, dummy_scores, prelim_scores)  # [B, MAX_NUM_ACTIONS]
 
-        # 4 sample action
-        action = tf.cast(tf.random.categorical(logits=scores, num_samples=1), tf.int32)  # [B, 1]
+        loss, action_idx, chosen_relation = self.random_categorical(range_arr, scores, next_relations)
 
-        # loss (5a.)
+        return loss, output, new_state, tf.nn.log_softmax(scores), action_idx, chosen_relation, amplitude
+
+
+    def random_categorical(self, range_arr, scores, next_relations, num_samples=1):
+        action = tf.cast(tf.random.categorical(logits=scores, num_samples=num_samples), tf.int32)  # [B, 1]
         label_action =  tf.squeeze(action, axis=1)
         loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=scores, labels=label_action)  # [B,]
-
-        # 6. Map back to true id
         action_idx = tf.squeeze(action)
         chosen_relation = tf.gather_nd(next_relations, tf.transpose(tf.stack([range_arr, action_idx])))
 
-        return loss, output, new_state, tf.nn.log_softmax(scores), action_idx, chosen_relation
+        return loss, action_idx, chosen_relation
 
 
     def init_belief(self):
         return tf.zeros((self.batch_size, 2 * self.hidden_size))
+
+    def init_action(self):
+        return tf.ones((self.batch_size, self.action_out_dim))
 
 
     def __call__(self, candidate_relation_sequence, candidate_entity_sequence, current_entities,
@@ -163,6 +202,7 @@ class Agent(object):
             for t in range(T):
                 if t == 0:
                     belief = self.init_belief()
+                    amplitude = self.init_action()
                 else:
                     scope.reuse_variables()
                     hiddens = tf.concat(all_hiddens, axis=-1)
@@ -175,13 +215,14 @@ class Agent(object):
 
                 path_label_t = path_label[t]  # [B]
 
-                loss, output, state, logits, idx, chosen_relation = self.step(next_possible_relations,
-                                                                              next_possible_entities,
-                                                                              state, prev_relation, query_embedding,
-                                                                              current_entities_t, belief,
-                                                                              label_action=path_label_t,
-                                                                              range_arr=range_arr,
-                                                                              first_step_of_test=first_step_of_test)
+                loss, output, state, logits, idx, chosen_relation, amplitude \
+                                                        = self.step(next_possible_relations,
+                                                                    next_possible_entities,
+                                                                    state, prev_relation, query_embedding,
+                                                                    current_entities_t, amplitude, belief,
+                                                                    label_action=path_label_t,
+                                                                    range_arr=range_arr,
+                                                                    first_step_of_test=first_step_of_test)
 
                 all_hiddens.append(output)
                 all_beliefs.append(belief)

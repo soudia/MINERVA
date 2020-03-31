@@ -136,10 +136,9 @@ class Trainer(object):
             self.query_relation, self.range_arr, self.first_state_of_test, self.path_length)
 
         self.loss_op = self.calc_reinforce_loss()
-        self.inference_loss = self.path_inference_loss()
 
         # backprop
-        self.train_op = self.bp(self.loss_op, self.inference_loss)
+        self.train_op = self.bp(self.loss_op)
 
         # Building the test graph
         self.prev_state = tf.placeholder(tf.float32, self.agent.get_mem_shape(), name="memory_of_agent")
@@ -160,9 +159,10 @@ class Trainer(object):
         with tf.variable_scope("policy_steps_unroll") as scope:
             scope.reuse_variables()
             belief = self.agent.init_belief()
-            self.test_loss, _, test_state, self.test_logits, self.test_action_idx, self.chosen_relation = self.agent.step(
+            action = self.agent.init_action()
+            self.test_loss, _, test_state, self.test_logits, self.test_action_idx, self.chosen_relation, _ = self.agent.step(
                 self.next_relations, self.next_entities, formated_state, self.prev_relation, self.query_embedding,
-                self.current_entities, belief, self.input_path[0], self.range_arr, self.first_state_of_test)
+                self.current_entities, action, belief, self.input_path[0], self.range_arr, self.first_state_of_test)
             self.test_state = tf.stack(test_state)
 
         logger.info('TF Graph creation done..')
@@ -186,21 +186,16 @@ class Trainer(object):
             _ = sess.run((self.agent.entity_embedding_init),
                          feed_dict={self.agent.entity_embedding_placeholder: embeddings})
 
-    def bp(self, cost, inference_loss):
-        rvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.inference_scope)
-        grads = tf.gradients(inference_loss, rvars)
-        grads, _ = tf.clip_by_global_norm(grads, self.grad_clip_norm)
-        infer_op = self.infer_optimizer.apply_gradients(zip(grads, rvars))
-
+    def bp(self, cost):
         self.baseline.update(tf.reduce_mean(self.cum_discounted_reward))
-        tvars = [v for v in tf.trainable_variables() if v.name not in [w.name for w in rvars]]
+        tvars = tf.trainable_variables()
         grads = tf.gradients(cost, tvars)
         grads, _ = tf.clip_by_global_norm(grads, self.grad_clip_norm)
         train_op = self.train_optimizer.apply_gradients(zip(grads, tvars))
 
-        with tf.control_dependencies([train_op, infer_op]):  # see https://github.com/tensorflow/tensorflow/issues/1899
+        with tf.control_dependencies([train_op]):  # see https://github.com/tensorflow/tensorflow/issues/1899
             self.dummy = tf.constant(0)
-        return tf.group([train_op, infer_op])
+        return train_op
 
 
     def calc_cum_discounted_reward(self, rewards):
@@ -222,10 +217,9 @@ class Trainer(object):
 
     def gpu_io_setup(self):
         # create fetches for partial_run_setup
-        fetches = self.per_example_loss  + self.action_idx + [self.inference_loss] + [self.loss_op] + self.per_example_logits + [self.dummy]
+        fetches = self.per_example_loss  + self.action_idx + [self.loss_op] + self.per_example_logits + [self.dummy]
         feeds =  [self.first_state_of_test] + self.candidate_relation_sequence+ self.candidate_entity_sequence + self.input_path + \
                 [self.query_relation] + [self.cum_discounted_reward] + [self.range_arr] + self.entity_sequence
-
 
         feed_dict = [{} for _ in range(self.path_length)]
 
@@ -290,7 +284,7 @@ class Trainer(object):
 
 
             # backprop
-            inference_loss, batch_total_loss, _ = sess.partial_run(h, [self.inference_loss, self.loss_op, self.dummy],
+            batch_total_loss, _ = sess.partial_run(h, [self.loss_op, self.dummy],
                                                    feed_dict={self.cum_discounted_reward: cum_discounted_reward})
 
             # print statistics
@@ -306,10 +300,10 @@ class Trainer(object):
                 raise ArithmeticError("Error in computing loss")
 
             logger.info("batch_counter: {0:4d}, num_hits: {1:7.4f}, avg. reward per batch {2:7.4f}, "
-                        "num_ep_correct {3:4d}, avg_ep_correct {4:7.4f}, train loss {5:7.4f}, inference loss {5:7.4f}".
+                        "num_ep_correct {3:4d}, avg_ep_correct {4:7.4f}, train loss {5:7.4f}".
                         format(self.batch_counter, np.sum(rewards), avg_reward, num_ep_correct,
                                (num_ep_correct / self.batch_size),
-                               train_loss, inference_loss))
+                               train_loss))
 
             if self.batch_counter % self.eval_every == 0:
                 with open(self.output_dir + '/scores.txt', 'a') as score_file:
@@ -375,13 +369,10 @@ class Trainer(object):
                 feed_dict[self.prev_state] = agent_mem
                 feed_dict[self.prev_relation] = previous_relation
 
-                inference_loss, loss, agent_mem, test_scores, test_action_idx, chosen_relation = sess.run(
-                    [ self.inference_loss, self.test_loss, self.test_state, self.test_logits, self.test_action_idx, self.chosen_relation],
+                loss, agent_mem, test_scores, test_action_idx, chosen_relation = sess.run(
+                    [self.test_loss, self.test_state, self.test_logits, self.test_action_idx, self.chosen_relation],
                     feed_dict=feed_dict)
                 loss = np.mean(loss)
-                inference_loss = np.mean(inference_loss)
-
-                logger.info("losses: {i_loss:4.2f} - {loss:4.2f} ".format(i_loss=inference_loss, loss=loss))
 
                 if beam:
                     k = self.test_rollouts

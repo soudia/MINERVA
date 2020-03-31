@@ -3,7 +3,7 @@
 script_dir="code/model"
 data_input_dir="datasets/data_preprocessed/umls/"
 vocab_dir="datasets/data_preprocessed/umls/vocab"
-total_iterations=2000
+total_iterations=200
 path_length=2
 hidden_size=50
 embedding_size=50
