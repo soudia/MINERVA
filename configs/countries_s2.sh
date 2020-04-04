@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
+script_dir="code/model"
 data_input_dir="datasets/data_preprocessed/countries_S2/"
 vocab_dir="datasets/data_preprocessed/countries_S2/vocab"
-total_iterations=2000
+total_iterations=200
 path_length=6
 hidden_size=5
 embedding_size=5

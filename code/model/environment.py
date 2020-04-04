@@ -145,9 +145,9 @@ class RewardShaper(object):
             inputs[0], get_target(inputs[1]))
 
         enc_outputs = self.encode(inference_path)
-        enc_outputs = tf.reshape(enc_outputs, [self.num_rollouts, self.batch_size, -1])
+        enc_outputs = tf.reshape(enc_outputs, [self.num_rollouts, id_time, self.batch_size, -1])
         for i in range(self.num_rollouts):
-            probs = projection(enc_outputs[i])
+            probs = [projection(enc_outputs[i][j]) for j in range(id_time)]
             probs = tf.reshape(probs, [id_time, self.batch_size, -1])
             results.append(tf.map_fn(reward_fn, dtype=tf.float32,
                                      elems=(probs, tf.range(id_time)), parallel_iterations=id_time))
