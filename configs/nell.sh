@@ -3,7 +3,7 @@
 script_dir="code/model"
 data_input_dir="datasets/data_preprocessed/nell/"
 vocab_dir="datasets/data_preprocessed/nell/vocab"
-total_iterations=200
+total_iterations=2000
 path_length=3
 hidden_size=50
 embedding_size=50

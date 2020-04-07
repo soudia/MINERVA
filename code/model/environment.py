@@ -56,8 +56,7 @@ class Episode(object):
         return self.query_relation
 
     def get_reward(self):
-        #last_step = self.current_hop == self.path_len # because self.current_hop starts at 1 in __call__
-        last_step = True
+        last_step = self.current_hop == self.path_len # because self.current_hop starts at 1 in __call__
         return self.reward_shaper.get_reward(self.current_entities, self.end_entities, self.all_paths, last_step)
 
     def __call__(self, action):

@@ -104,9 +104,10 @@ class Trainer(object):
         self.range_arr = tf.placeholder(tf.int32, shape=[None, ])
         self.all_paths = tf.get_variable(name="all_paths", dtype=tf.int32, trainable=None, 
                                         shape=(self.batch_size, self.path_length))
-        self.path_embeddings = \
-            tf.get_variable(name="path_embedding", dtype=tf.float32, shape=(self.batch_size,
-                            self.path_length*self.agent.m * self.agent.hidden_size), trainable=None)
+        if self.intrinsic_reward:
+            self.path_embeddings = \
+                tf.get_variable(name="path_embedding", dtype=tf.float32, shape=(self.batch_size,
+                                self.path_length*self.agent.m * self.agent.hidden_size), trainable=None)
         self.global_step = tf.Variable(0, trainable=False)
         self.decaying_beta = tf.train.exponential_decay(self.beta, self.global_step,
                                                    200, 0.90, staircase=False)
@@ -245,9 +246,10 @@ class Trainer(object):
         encoder = self.train_environment.reward_shaper.encode
         for episode in self.train_environment.get_episodes():
 
-            path_embeddings = encoder(episode.all_paths, episode.all_lengths)
-            tf.assign(self.path_embeddings, path_embeddings)
-            tf.assign(self.all_paths, episode.all_paths)
+            if self.intrinsic_reward:
+                path_embeddings = encoder(episode.all_paths, episode.all_lengths)
+                tf.assign(self.path_embeddings, path_embeddings)
+                tf.assign(self.all_paths, episode.all_paths)
 
             self.batch_counter += 1
             h = sess.partial_run_setup(fetches=fetches, feeds=feeds)
