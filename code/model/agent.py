@@ -109,7 +109,7 @@ class Agent(object):
         with tf.variable_scope("policy", reuse=tf.AUTO_REUSE):
             inputs = tf.concat([state, alpha * belief, beta * observation], -1)
             hidden = tf.layers.Dense(2 * self.action_inp_dim, activation=tf.nn.relu)(inputs)
-            output = tf.layers.Dense(self.action_out_dim, activation=tf.nn.relu)(hidden)
+            output = tf.layers.Dense(self.action_out_dim, activation=tf.nn.tanh)(hidden)
         return output
 
     def forward(self, state, scope="feed_forward"):

@@ -175,8 +175,6 @@ class Trainer(object):
         else:
             return  self.model_saver.restore(sess, restore)
 
-
-
     def initialize_pretrained_embeddings(self, sess):
         if self.pretrained_embeddings_action != '':
             embeddings = np.loadtxt(open(self.pretrained_embeddings_action))
